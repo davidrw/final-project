@@ -11,13 +11,13 @@ var count2=0;
 
 
 var server = http.createServer(function(request, response) {
-    /*
+    
     response.write(page);
     response.end();
-    */
+    
 });
 
-/*
+
 var fs = require('fs');
 
 var page = undefined;
@@ -28,7 +28,7 @@ fs.readFile("start_2.html", function(error, data) {
         page = data;
     }
 });
-*/
+
 
 server.listen(4999, function() {
   console.log((new Date()) + " Server is listening on port 4999");
