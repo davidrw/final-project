@@ -1,0 +1,409 @@
+<!--
+// Copyright 2013 Digital Codex LLC
+// You may use this code for your own education.  If you use it
+// largely intact, or develop something from it, don't claim that
+// your code came first.  You are using this code completely at
+// your own risk.  If you rely on it to work in any particular
+// way, you're an idiot and we won't be held responsible.
+-->
+
+<html>
+<head>
+  <meta http-equiv="Content-Type"
+        content="text/html; charset=UTF-8" />
+  <style>
+    video {
+      width:  320px;
+      height:  240px;
+      border:  1px solid black;
+    }
+    div {
+      display:  inline-block;
+    }
+  </style>
+</head>
+<body>
+
+<!-- blank script section is placeholder for query params -->
+<script></script>
+
+<!-- load polyfill, local copy first for local testing -->
+<script>
+
+
+var RTCPeerConnection = null;
+var getUserMedia = null;
+var attachMediaStream = null;
+var reattachMediaStream = null;
+var webrtcDetectedBrowser = null;
+
+function trace(text) {
+  // This function is used for logging.
+  if (text[text.length - 1] == '\n') {
+    text = text.substring(0, text.length - 1);
+  }
+  console.log((performance.now() / 1000).toFixed(3) + ": " + text);
+}
+
+if (navigator.mozGetUserMedia) {
+  console.log("This appears to be Firefox");
+
+  webrtcDetectedBrowser = "firefox";
+
+  // The RTCPeerConnection object.
+  RTCPeerConnection = mozRTCPeerConnection;
+
+  // The RTCSessionDescription object.
+  RTCSessionDescription = mozRTCSessionDescription;
+
+  // The RTCIceCandidate object.
+  RTCIceCandidate = mozRTCIceCandidate;
+
+  // Get UserMedia (only difference is the prefix).
+  // Code from Adam Barth.
+  getUserMedia = navigator.mozGetUserMedia.bind(navigator);
+
+  // Attach a media stream to an element.
+  attachMediaStream = function(element, stream) {
+    console.log("Attaching media stream");
+    element.mozSrcObject = stream;
+    element.play();
+  };
+
+  reattachMediaStream = function(to, from) {
+    console.log("Reattaching media stream");
+    to.mozSrcObject = from.mozSrcObject;
+    to.play();
+  };
+
+  // Fake get{Video,Audio}Tracks
+  MediaStream.prototype.getVideoTracks = function() {
+    return [];
+  };
+
+  MediaStream.prototype.getAudioTracks = function() {
+    return [];
+  };
+} else if (navigator.webkitGetUserMedia) {
+  console.log("This appears to be Chrome");
+
+  webrtcDetectedBrowser = "chrome";
+
+  // The RTCPeerConnection object.
+  RTCPeerConnection = webkitRTCPeerConnection;
+
+  // Get UserMedia (only difference is the prefix).
+  // Code from Adam Barth.
+  getUserMedia = navigator.webkitGetUserMedia.bind(navigator);
+
+  // Attach a media stream to an element.
+  attachMediaStream = function(element, stream) {
+    if (typeof element.srcObject !== 'undefined') {
+      element.srcObject = stream;
+    } else if (typeof element.mozSrcObject !== 'undefined') {
+      element.mozSrcObject = stream;
+    } else if (typeof element.src !== 'undefined') {
+      element.src = URL.createObjectURL(stream);
+    } else {
+      console.log('Error attaching stream to element.');
+    }
+  };
+
+  reattachMediaStream = function(to, from) {
+    to.src = from.src;
+  };
+
+  // The representation of tracks in a stream is changed in M26.
+  // Unify them for earlier Chrome versions in the coexisting period.
+  if (!webkitMediaStream.prototype.getVideoTracks) {
+    webkitMediaStream.prototype.getVideoTracks = function() {
+      return this.videoTracks;
+    };
+    webkitMediaStream.prototype.getAudioTracks = function() {
+      return this.audioTracks;
+    };
+  }
+
+  // New syntax of getXXXStreams method in M26.
+  if (!webkitRTCPeerConnection.prototype.getLocalStreams) {
+    webkitRTCPeerConnection.prototype.getLocalStreams = function() {
+      return this.localStreams;
+    };
+    webkitRTCPeerConnection.prototype.getRemoteStreams = function() {
+      return this.remoteStreams;
+    };
+  }
+} else {
+  console.log("Browser does not appear to be WebRTC-capable");
+}
+
+
+
+</script>
+
+<!-- load XHR-based signaling channel that direct connects based
+     on a key -->
+
+<script>
+    
+var connection = new WebSocket('ws://127.0.0.1:4999'); 
+var remote_video_stream,local_video_stream, pc, remote_video,local_video;
+var constraints = {mandatory: {OfferToReceiveAudio: true,
+                               OfferToReceiveVideo: true}};
+var doNothing = function(){};
+var haveLocalMedia= false; 
+var _case;
+    
+var dataChannelOptions = {
+  ordered: false, // do not guarantee order
+  maxRetransmitTime: 3000, // in milliseconds
+};
+
+var statuslineE,statusE,sendE,connectE,callE,scMessageE,id,destination=null,confirmation,count,dataChannel, dataChannel2;
+    
+function create_peer(){
+    pc = new RTCPeerConnection({iceServers:[{url:"stun:stun.l.google.com:19302"}]});
+    console.log("creando peer");
+    pc.onicecandidate = onicecandidate;
+    pc.onaddstream = onaddremotestream;
+    //pc.ondatachannel = ondatachanneladded
+    attachmediaIfReady(); 
+    statusE.innerHTML = "Ready for call";
+    callE.style.display = "inline";
+}   
+
+
+
+/*
+function ondatachanneladded(e){
+  dataChannel = e.channel;
+  console.log("actividad en data channel");
+  dataChannel.onmessage = function(e){
+    document.getElementById("chatlog").innerHTML+='<br>'+e.data;
+}
+}
+*/
+
+    
+function onicecandidate(evt){
+    var key = document.getElementById("key").value;
+    console.log("onicecandidate");
+    if (evt.candidate){
+      connection.send(JSON.stringify({"key" : key,
+                                      "id" : id,
+                                      "type" : "candidate",
+                                      "mlineindex" : evt.candidate.sdpMLineIndex,
+                                      "candidate" :evt.candidate.candidate,
+                                      "destination": destination}));    
+    }
+}
+       
+function onaddremotestream(e){
+    count++;
+    var remote_video = document.createElement("video");
+    remote_video.id="myVideo"+count;
+    remote_video.autoplay=true;
+    document.getElementById("cuadro").appendChild(remote_video);
+    remote_video_stream = e.stream;
+    attachMediaStream(remote_video, remote_video_stream);
+}
+
+    
+    
+window.onload = function(){
+    statuslineE = document.getElementById("statusline"),
+    statusE = document.getElementById("status"),
+    sendE = document.getElementById("send"),
+    connectE = document.getElementById("connect"),
+    callE = document.getElementById("call"),
+    scMessageE = document.getElementById("scMessage");
+
+
+    /*remote_video = document.getElementById("yourVideo1");*/
+    local_video = document.getElementById("myVideo");
+    getMedia();
+    connection.onopenn = function(){};
+}
+
+connection.onmessage = function(msg) {
+  var evt = JSON.parse(msg.data);
+  console.log(evt);
+    switch(evt["type"]){
+        case "confirmation":
+            confirmation = evt["instructor"];
+            id = evt["id"];
+            console.log(id);
+            break;
+            
+        case "id":
+            id = evt["id"];
+            console.log(id);
+            break;
+            
+        case "connected":
+            if (confirmation){
+              destination = evt["destination"];
+            }  
+            console.log(destination);
+            create_peer();
+            break;
+        
+        case "candidate":
+            console.log("candidato");
+            console.log(evt);
+            pc.addIceCandidate(new RTCIceCandidate({sdpMLineIndex:evt["mlineindex"],
+                                                    candidate:evt["candidate"]}));
+            break;
+            
+        case "offer":
+            console.log("oferta");
+            console.log(evt);
+            pc.setRemoteDescription(new RTCSessionDescription(evt["sdp"]));
+            create_answer();
+            break;
+        case "answer":
+            console.log("respuesta");
+            console.log(evt);
+            pc.setRemoteDescription(new RTCSessionDescription(evt["sdp"]));
+            create_answer();
+            break;  
+    }
+};
+    
+function call(){
+    _case = "offer";
+
+    dataChannel = pc.createDataChannel('chat');
+
+    dataChannel.onmessage = function (event) {
+      console.log("Got Data Channel Message:", event.data);
+    };
+
+    dataChannel.onopen = function () {
+      dataChannel.send("Hello World!");
+    };
+
+    pc.createOffer(gotdescription, doNothing, constraints);
+}
+  
+    
+function create_answer(){
+    _case = "answer";
+    dataChannel = pc.createDataChannel('chat');
+    pc.createAnswer(gotdescription, doNothing, constraints);
+}
+
+function sendmsg(){
+  var ggg = document.getElementById("chat_msg").value;
+  console.log("enviado el mensaje "+ ggg+ " a traves del dataChannel");
+  console.log(dataChannel);
+  dataChannel.send(JSON.stringify(ggg));
+
+}
+    
+function gotdescription(description){
+    var key = document.getElementById("key").value;
+    console.log("descripcion");
+    console.log(description);
+    pc.setLocalDescription(description);
+    connection.send(JSON.stringify({"key":key,
+                                    "id":id,
+                                    "destination":destination,
+                                    "type":_case,
+                                    "sdp": description}));
+}
+
+function connect(){
+  console.log(id);
+  var key = document.getElementById("key").value;
+  statuslineE.style.display = "inline";
+  statusE.innerHTML ="Peer signaling connected, waiting for local media";
+  sendE.style.display = "inline";
+  connectE.style.display = "none";
+  scMessageE.style.display = "inline-block";
+  connection.send(JSON.stringify({"key":key,
+                                  "id":id,
+                                  "type": "connected"}));
+}   
+    
+    
+function getMedia() {
+  getUserMedia({"audio":true, "video":true},gotUserMedia, didntGetUserMedia);
+}
+
+function gotUserMedia(stream) {
+  local_video_stream = stream;
+  haveLocalMedia = true;
+  attachMediaStream(local_video, local_video_stream);    
+    
+    
+}
+
+function didntGetUserMedia() {
+  console.log("couldn't get video");
+}
+
+function attachmediaIfReady(){
+    if (pc && haveLocalMedia){
+        pc.addStream(local_video_stream);
+    }
+}
+ 
+    
+    
+</script>
+
+<div id="setup">
+  <p>WebRTC Demo</p>
+  <p>Key:
+    <input type="text" name="key" id="key"/>
+    <button id="connect" onclick="connect()">Connect</button>
+    <span id="statusline" style="display:none">Status:
+      <span id="status">Disconnected</span>
+    </span>
+    <button id="call" style="display:none"
+            onclick = "call()">Call</button>
+  </p>
+</div>
+
+<div id="scMessage" style="float:right;display:none">
+  <p>Message:
+    <input type="text" width="100%" name="message" id="message"/>
+    <button id="send" style="display:none"
+            onclick="send()">Send</button>
+  </p>
+
+  <p>Response:  <span id="response"></span></p>
+</div>
+
+<br/>
+
+<div style="width:45%;vertical-align:top">
+  <div>
+    <video id="myVideo" autoplay="autoplay" controls
+           muted="true"/>
+  </div>
+  <p><b>Outgoing Messages</b>
+     <br/>
+     <span id="outmessages"></span>
+  </p>
+</div>
+    
+    <div id="ppp"></div>
+
+<div id="cuadro" style="width:45%;vertical-align:top">
+  <p><b>Incoming Messages</b>
+     <br/>
+     <span id="inmessages"></span>
+  </p>
+</div>
+<br>
+<br>
+<br>
+<br>
+<input type="text" name="msg" id="chat_msg"/>
+<button id="btn_enviar" onclick="sendmsg()" >enviar</button>
+<div id="chatlog"></div>
+
+</body>
+</html>
